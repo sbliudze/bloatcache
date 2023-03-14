@@ -1,4 +1,4 @@
-package org.example;
+package edu.kit.kastel.formal;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -16,6 +16,7 @@ public class Server {
     }
 
     private void listen() throws IOException {
+        System.out.format("Listen to %s%n", serverSocket.getLocalSocketAddress());
         var clientSocket = serverSocket.accept();
         ForkJoinPool.commonPool().execute(new ConnectionHandler(data, clientSocket));
     }
