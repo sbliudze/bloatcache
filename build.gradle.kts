@@ -1,9 +1,10 @@
 plugins {
     id("java")
+    id("application")
 }
 
-group = "org.example"
-version = "1.0-SNAPSHOT"
+group = "edu.kit.kastel.formal"
+version = "0.1"
 
 repositories {
     mavenCentral()

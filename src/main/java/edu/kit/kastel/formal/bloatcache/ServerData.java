@@ -1,4 +1,4 @@
-package edu.kit.kastel.formal;
+package edu.kit.kastel.formal.bloatcache;
 
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -29,7 +29,6 @@ public class ServerData {
         return false;
     }
 
-
     public Entry get(Entry.Key key) {
         if (keys.contains(key)) {
             synchronized (hot) {
@@ -49,6 +48,11 @@ public class ServerData {
     }
 
     public boolean insert(Entry entry) {
-        return false;
+        if (keys.contains(entry.key)) {
+            delete(entry.key);
+        }
+        keys.add(entry.key);
+        warm.add(entry);
+        return true;
     }
 }

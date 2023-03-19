@@ -1,4 +1,4 @@
-package edu.kit.kastel.formal;
+package edu.kit.kastel.formal.bloatcache;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -9,6 +9,8 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import static edu.kit.kastel.formal.bloatcache.Util.checkArguments;
 
 /**
  * @author Alexander Weigl
@@ -25,7 +27,7 @@ public class ConnectionHandler implements Runnable {
         this.data = data;
         this.client = clientSocket;
         in = new PushbackInputStream(clientSocket.getInputStream());
-        out = new PrintWriter(clientSocket.getOutputStream());
+        out = new PrintWriter(clientSocket.getOutputStream(), true);
     }
 
     @Override
@@ -57,7 +59,7 @@ public class ConnectionHandler implements Runnable {
 
     private byte[] readLine(long length) throws IOException {
         var out = new ByteArrayOutputStream();
-        for (; length >= 0; length--) {
+        for (; length > 0; length--) {
             var c = in.read();
             if (c == -1) {
                 sendError();
@@ -93,8 +95,9 @@ public class ConnectionHandler implements Runnable {
             if (c == ' ') {
                 args.add(current.toString());
                 current = new StringBuilder();
+            } else {
+                current.append((char) c);
             }
-            current.append((char) c);
         }
         return args.toArray(new String[0]);
     }
@@ -118,12 +121,66 @@ public class ConnectionHandler implements Runnable {
             case "prepend":
                 handleManipCommand(args);
                 break;
-
+            case "cas":
+                handleCasCommand(args);
+                break;
+            case "incr":
+            case "decr":
+                handleIncrDecrCommand(args);
+                break;
             case "delete":
                 handleDeleteCommand(args);
                 break;
+            case "touch":
+                handleTouchCommand(args);
+                break;
+            case "flush_all":
+                assert false;
+                break;
         }
     }
+
+    /**
+     * Touch
+     * -----
+     * <p>
+     * The "touch" command is used to update the expiration time of an existing item
+     * without fetching it.
+     * <p>
+     * touch <key> <exptime> [noreply]\r\n
+     * <p>
+     * - <key> is the key of the item the client wishes the server to touch
+     * <p>
+     * - <exptime> is expiration time. Works the same as with the update commands
+     * (set/add/etc). This replaces the existing expiration time. If an existing
+     * item were to expire in 10 seconds, but then was touched with an
+     * expiration time of "20", the item would then expire in 20 seconds.
+     * <p>
+     * - "noreply" optional parameter instructs the server to not send the
+     * reply.  See the note in Storage commands regarding malformed
+     * requests.
+     * <p>
+     * The response line to this command can be one of:
+     * <p>
+     * - "TOUCHED\r\n" to indicate success
+     * <p>
+     * - "NOT_FOUND\r\n" to indicate that the item with this key was not
+     * found.
+     *
+     * @param args
+     */
+    private void handleTouchCommand(String[] args) {
+
+    }
+
+    /**
+     * cas
+     * Check And Set (or Compare And Swap). An operation that stores data, but only if no one else has updated the data since you read it last. Useful for resolving race conditions on updating cache data.
+     */
+    public void handleCasCommand(String[] args) {
+
+    }
+
 
     /**
      * <code><pre>
@@ -217,25 +274,28 @@ public class ConnectionHandler implements Runnable {
      */
     private void handleGatCommand(String[] args) {
         checkArguments(args, "gat", "T", "K*");
-        // TODO right? There was something in the documentation about it
-        var time = Integer.parseInt(args[1]);
+        var time = Util.expirationTime(Integer.parseInt(args[1]));
         for (int i = 2; i < args.length; i++) {
             final var key = new Entry.Key(args[i]);
             var value = data.get(key);
             if (value != null) {
-                var v = new String(value.value);
-                out.format("VALUE %s %s %d %s\r\n",
-                        key, value.flags, v.length(), "");
-                out.format("%s\r\n", v);
+                sendValue(value.key.value, value.flags, value.value, value.cas);
                 value.expirationDate = time;
+            } else {
+                sendNotFound();
             }
         }
+        sendEnd();
+
     }
 
+    private void sendEnd() {
+        out.format("END\r\n");
+    }
 
     private void handleManipCommand(String[] args) throws IOException {
         // <command name> <key> <flags> <exptime> <bytes>
-        checkArguments(args, "set", "K", "F", "T", "I");
+        checkArguments(args, "set|replace|add|append|prepend", "K", "F", "T", "I");
         var key = new Entry.Key(args[1]);
         var flags = Integer.parseInt(args[2]);
         var exptime = Integer.parseInt(args[3]);
@@ -345,6 +405,7 @@ public class ConnectionHandler implements Runnable {
      */
     public void sendNotFound() {
         out.format("NOT_FOUND\r\n");
+        out.flush();
     }
 
 
@@ -482,64 +543,33 @@ public class ConnectionHandler implements Runnable {
             final var key = new Entry.Key(args[i]);
             var value = data.get(key);
             if (value != null) {
-                var v = value.value.toString();
-                out.format("VALUE %s %s %d %s\r\n",
-                        key, value.flags, v.length(), "");
-                out.format("%s\r\n", v);
+                sendValue(value.key.value, value.flags, value.value, value.cas);
+            } else {
+                sendNotFound();
             }
+            System.out.println("REQUEST HANDLED");
         }
     }
 
-    private void checkArguments(String[] args, String... specifier) {
-        checkArguments(0, 0, args, specifier);
+    /**
+     * Each item sent by the server looks like this:
+     *
+     * <pre>
+     * VALUE <key> <flags> <bytes> [<cas unique>]\r\n
+     * <data block>\r\n
+     * </pre>
+     *
+     * @param key
+     * @param flags
+     * @param v
+     */
+    private void sendValue(byte[] key, int flags, byte[] v, Long cas) {
+        out.format("VALUE ");
+        for (byte b : key) out.write(b);
+        out.format(" %d %d%s\r\n", flags, v.length, cas == null ? "" : " " + cas);
+        for (byte b : v) out.write(b);
+        out.format("\r\n");
+        out.flush();
     }
 
-
-    private boolean checkArgument(String arg, String exp) {
-        if (exp.contains("|")) {
-            String[] allowed = exp.split("\\|");
-            return Arrays.stream(allowed).anyMatch(it -> checkArgument(arg, it));
-        }
-
-        if (exp.startsWith("[")) {
-            if (arg == null) {
-                return true;
-            }
-            exp = exp.substring(1, exp.length() - 1);
-            return checkArgument(arg, exp);
-        }
-
-        switch (exp) {
-            case "K":
-                if (arg.length() > 250)
-                    throw new RuntimeException();
-                break;
-            case "T":
-                break;
-            case "I":
-                return arg.matches("[0-9]+");
-        }
-
-        if (exp.toLowerCase().equals(exp)) {
-            return exp.equals(arg);
-        }
-
-        throw new RuntimeException("unknown expected argument " + exp);
-    }
-
-    private void checkArguments(int posA, int posS, String[] args, String[] expected) {
-        if (posA >= args.length) return;
-        if (posS >= expected.length) return;
-
-        var arg = args[posA];
-        var exp = expected[posS];
-
-        if (!checkArgument(arg, exp)) {
-            throw new RuntimeException();
-        }
-
-
-        if (!exp.endsWith("*")) posS += 1;
-        checkArguments(posA + 1, posS, args, expected);
-    }
 }

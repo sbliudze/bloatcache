@@ -1,4 +1,4 @@
-package edu.kit.kastel.formal;
+package edu.kit.kastel.formal.bloatcache;
 
 import java.util.Arrays;
 
@@ -21,7 +21,7 @@ public class Entry {
 
     int expirationDate;
 
-    long cas;
+    Long cas;
 
     public Entry(String key, int flags, int exptime, byte[] data) {
         this(new Key(key), flags, exptime, data);
@@ -36,7 +36,7 @@ public class Entry {
 
     public static class Key {
         //@invariant  0 <= key.length <= 250;
-        private final byte[] value;
+        final byte[] value;
 
         public Key(byte[] value) {
             this.value = value;
@@ -58,5 +58,10 @@ public class Entry {
         public int hashCode() {
             return Arrays.hashCode(value);
         }
+    }
+
+    @Override
+    public String toString() {
+        return new String(value);
     }
 }
