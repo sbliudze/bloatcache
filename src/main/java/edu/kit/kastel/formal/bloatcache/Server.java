@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.TimeUnit;
 
 public class Server implements AutoCloseable{
     private final ServerData data = new ServerData();
@@ -18,7 +17,7 @@ public class Server implements AutoCloseable{
     public void listen() throws IOException {
         System.out.format("Listen to %s%n", serverSocket.getLocalSocketAddress());
         var clientSocket = serverSocket.accept();
-        ForkJoinPool.commonPool().execute(new ConnectionHandler(data, clientSocket));
+        ForkJoinPool.commonPool().execute(new CommandHandling(data, clientSocket));
     }
 
     @Override

@@ -15,7 +15,7 @@ class UtilTest {
 
     @Test
     void testCheckArguments() {
-        checkArguments(new String[]{"set", "abc", "0", "0", "3"}, "set", "K", "F", "T", "I");
+        checkArguments(args, "set", "K", "F", "T", "I");
     }
 
     @Test

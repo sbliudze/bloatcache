@@ -1,29 +1,28 @@
 package edu.kit.kastel.formal.bloatcache;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.PushbackInputStream;
 import java.math.BigInteger;
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import static edu.kit.kastel.formal.bloatcache.Util.checkArguments;
+import static edu.kit.kastel.formal.bloatcache.Util.parseInt;
 
 /**
  * @author Alexander Weigl
  * @version 1 (14.03.23)
  */
-public class ConnectionHandler implements Runnable {
+public class CommandHandling implements Runnable {
     private final Socket client;
     private final PushbackInputStream in;
     private final PrintWriter out;
 
     private final ServerData data;
 
-    public ConnectionHandler(ServerData data, Socket clientSocket) throws IOException {
+    public CommandHandling(ServerData data, Socket clientSocket) throws IOException {
         this.data = data;
         this.client = clientSocket;
         in = new PushbackInputStream(clientSocket.getInputStream());
@@ -35,8 +34,8 @@ public class ConnectionHandler implements Runnable {
         try {
             while (true) {
                 try {
-                    String[] args = readCommandLine();
-                    if ("END".equals(args[0])) break;
+                    var args = Util.readArguments(in);
+                    //if ("END".equals(args[0])) break;
                     handleCommand(args);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
@@ -57,54 +56,15 @@ public class ConnectionHandler implements Runnable {
         }
     }
 
-    private byte[] readLine(long length) throws IOException {
-        var out = new ByteArrayOutputStream();
-        for (; length > 0; length--) {
-            var c = in.read();
-            if (c == -1) {
-                sendError();
-                throw new RuntimeException("Channel closed before end of data reached");
-            }
-            out.write(c);
-        }
-
-        assert (in.read() == '\r');
-        assert (in.read() == '\n');
-        return out.toByteArray();
-    }
 
     private void sendError() {
         out.format("ERROR\r\n");
     }
 
-    private String[] readCommandLine() throws IOException {
-        List<String> args = new ArrayList<>(16);
-        StringBuilder current = new StringBuilder();
+    private void handleCommand(List<byte[]> args) throws IOException {
+        String command = new String(args.get(0));
 
-        while (true) {
-            var c = in.read();
-            if (c == '\r') {
-                var c2 = in.read();
-                if (c2 == '\n') {
-                    args.add(current.toString());
-                    break;
-                } else {
-                    in.unread(c2);
-                }
-            }
-            if (c == ' ') {
-                args.add(current.toString());
-                current = new StringBuilder();
-            } else {
-                current.append((char) c);
-            }
-        }
-        return args.toArray(new String[0]);
-    }
-
-
-    private void handleCommand(String[] args) throws IOException {
-        switch (args[0]) {
+        switch (command) {
             case "get":
             case "gets":
                 handleGetCommand(args);
@@ -169,18 +129,50 @@ public class ConnectionHandler implements Runnable {
      *
      * @param args
      */
-    private void handleTouchCommand(String[] args) {
+    private void handleTouchCommand(List<byte[]> args) {
+        checkArguments(args, "touch", "K", "T", "[noreply]");
+        var noreply = isNoreply(args);
+        var key = new Entry.Key(args.get(1));
+        var exptime = Util.expirationTime(args.get(2));
 
+        var d = data.get(key);
+        if (d != null) {
+            d.expirationDate = exptime;
+            if (!noreply) sendTouched();
+        } else {
+            if (!noreply) sendNotFound();
+        }
+    }
+
+    private void sendTouched() {
+        out.format("TOUCHED\r\n");
     }
 
     /**
-     * cas
-     * Check And Set (or Compare And Swap). An operation that stores data, but only if no one else has updated the data since you read it last. Useful for resolving race conditions on updating cache data.
+     * Check And Set (or Compare And Swap). An operation that stores data, but only if no one else has updated
+     * the data since you read it last. Useful for resolving race conditions on updating cache data.
      */
-    public void handleCasCommand(String[] args) {
+    public void handleCasCommand(List<byte[]> args) throws IOException {
+        checkArguments(args, "cas", "K", "F", "T", "I", "C", "[noreply]");
+        var key = new Entry.Key(args.get(1));
+        var flags = parseInt(args.get(2));
+        var exptime = parseInt(args.get(3));
+        var bytes = parseInt(args.get(4));
+        var cas = Util.parseLongNumber(args.get(5));
+        var noreply = isNoreply(args);
+        var data = Util.readLineExactly(in, bytes);
 
+        var currentEntry = this.data.get(key);
+
+        if (currentEntry != null) {
+            if (currentEntry.cas == cas) {
+                currentEntry.update(data, exptime, flags);
+                if (!noreply) sendStored();
+                return;
+            }
+            if (!noreply) sendNotStored();
+        }
     }
-
 
     /**
      * <code><pre>
@@ -212,10 +204,10 @@ public class ConnectionHandler implements Runnable {
      *
      * @param args
      */
-    private void handleDeleteCommand(String[] args) {
+    private void handleDeleteCommand(List<byte[]> args) {
         checkArguments(args, "delete", "K", "[noreply]");
         var noreply = isNoreply(args);
-        var key = args[1];
+        var key = args.get(1);
         var val = data.delete(new Entry.Key(key));
 
         if (!noreply) {
@@ -227,8 +219,8 @@ public class ConnectionHandler implements Runnable {
         }
     }
 
-    private boolean isNoreply(String[] args) {
-        return args[args.length - 1].equals("noreply");
+    private boolean isNoreply(List<byte[]> args) {
+        return args.get(args.size() - 1).equals("noreply");
     }
 
     /**
@@ -272,49 +264,46 @@ public class ConnectionHandler implements Runnable {
      *
      * @param args
      */
-    private void handleGatCommand(String[] args) {
+    private void handleGatCommand(List<byte[]> args) {
         checkArguments(args, "gat", "T", "K*");
-        var time = Util.expirationTime(Integer.parseInt(args[1]));
-        for (int i = 2; i < args.length; i++) {
-            final var key = new Entry.Key(args[i]);
+        var time = Util.expirationTime(args.get(1));
+        for (int i = 2; i < args.size(); i++) {
+            final var key = new Entry.Key(args.get(i));
             var value = data.get(key);
             if (value != null) {
                 sendValue(value.key.value, value.flags, value.value, value.cas);
                 value.expirationDate = time;
-            } else {
-                sendNotFound();
             }
         }
         sendEnd();
-
     }
 
     private void sendEnd() {
         out.format("END\r\n");
     }
 
-    private void handleManipCommand(String[] args) throws IOException {
+    private void handleManipCommand(List<byte[]> args) throws IOException {
         // <command name> <key> <flags> <exptime> <bytes>
         checkArguments(args, "set|replace|add|append|prepend", "K", "F", "T", "I");
-        var key = new Entry.Key(args[1]);
-        var flags = Integer.parseInt(args[2]);
-        var exptime = Integer.parseInt(args[3]);
-        var bytes = Integer.parseInt(args[4]);
+        var key = new Entry.Key(args.get(1));
+        var flags = parseInt(args.get(2));
+        var exptime = parseInt(args.get(3));
+        var bytes = parseInt(args.get(4));
         var noreply = isNoreply(args);
-        var data = readLine(bytes);
+        var data = Util.readLineExactly(in, bytes);
 
-        var set = "set".equals(args[0]);
-        var replace = "replace".equals(args[0]);
-        var add = "add".equals(args[0]);
-        var append = "append".equals(args[0]);
-        var prepend = "prepend".equals(args[0]);
+        final var cmd = args.get(0);
+        var set = Util.equals("set", cmd);
+        var replace = Util.equals("replace", cmd);
+        var add = Util.equals("add", cmd);
+        var append = Util.equals("append", cmd);
+        var prepend = Util.equals("prepend", cmd);
 
         var currentEntry = this.data.get(key);
 
         if (replace) {
             if (currentEntry != null) {
-                currentEntry.value = data;
-                //TODO set everything
+                currentEntry.update(data, exptime, flags);
                 if (!noreply) sendStored();
             } else {
                 if (!noreply) sendNotStored();
@@ -345,8 +334,7 @@ public class ConnectionHandler implements Runnable {
         if (append) {
             if (currentEntry != null) {
                 byte[] newValue = concatArray(currentEntry.value, data);
-                currentEntry.value = newValue;
-                //TODO set everything
+                currentEntry.update(newValue, exptime, flags);
                 if (!noreply) sendStored();
             } else {
                 if (!noreply) sendNotStored();
@@ -356,8 +344,8 @@ public class ConnectionHandler implements Runnable {
 
         if (prepend) {
             if (currentEntry != null) {
-                currentEntry.value = concatArray(data, currentEntry.value);
-                //TODO set everything
+                byte[] newValue = concatArray(data, currentEntry.value);
+                currentEntry.update(newValue, exptime, flags);
                 if (!noreply) sendStored();
             } else {
                 if (!noreply) sendNotStored();
@@ -457,10 +445,10 @@ public class ConnectionHandler implements Runnable {
      * optimization, so you also shouldn't rely on that.
      * </pre></code>
      */
-    void handleIncrDecrCommand(String[] args) {
+    void handleIncrDecrCommand(List<byte[]> args) {
         checkArguments(args, "incr|decr", "K", "I");
         var noreply = isNoreply(args);
-        var entry = data.get(new Entry.Key(args[1]));
+        var entry = data.get(new Entry.Key(args.get(1)));
         if (entry == null) {
             sendNotFound();
             return;
@@ -468,22 +456,23 @@ public class ConnectionHandler implements Runnable {
 
         assert (entry.value.length <= 8); // should look like a 64bit integer
 
-        var param = BigInteger.valueOf(Long.parseLong(args[2]));
-        var value = new BigInteger(entry.value);
+        //Normally we should use BigInteger to receive true 64-bit unsigned ints.
+        var param = Util.parseLongNumber(args.get(2));
+        var value = Util.parseLongNumber(entry.value);
         var mask = BigInteger.valueOf(-1); // 64bit mask
 
-        if ("incr".equals(args[0])) {
-            value = value.add(param).and(mask);
-            entry.value = value.toByteArray();
+        if (Util.equals("incr", args.get(0))) {
+            value = value + param;
         }
 
-        if ("decr".equals(args[0])) {
-            value = value.add(param);
-            if (value.compareTo(BigInteger.ZERO) < 0) {
-                value = BigInteger.ZERO;
+        if (Util.equals("decr", args.get(0))) {
+            value = value + param;
+            if (value < 0) {
+                value = 0;
             }
-            entry.value = value.toByteArray();
         }
+
+        entry.value = ("" + value).getBytes();
 
         if (!noreply) {
             out.format("%s\r\n", value);
@@ -537,17 +526,14 @@ public class ConnectionHandler implements Runnable {
      *
      * @param args
      */
-    private void handleGetCommand(String[] args) {
+    private void handleGetCommand(List<byte[]> args) {
         checkArguments(args, "get", "K*");
-        for (int i = 1; i < args.length; i++) {
-            final var key = new Entry.Key(args[i]);
+        for (int i = 1; i < args.size(); i++) {
+            final var key = new Entry.Key(args.get(i));
             var value = data.get(key);
             if (value != null) {
                 sendValue(value.key.value, value.flags, value.value, value.cas);
-            } else {
-                sendNotFound();
             }
-            System.out.println("REQUEST HANDLED");
         }
     }
 

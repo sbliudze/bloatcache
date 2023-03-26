@@ -100,8 +100,7 @@ public class Util {
             if (c == -1) break;
             if (c == '\r') {
                 var c2 = in.read();
-                if (c2 == '\n')
-                    break;
+                if (c2 == '\n') break;
                 else {
                     //restore \r\n completely to handle optional parameters
                     in.unread(c2);
@@ -170,15 +169,33 @@ public class Util {
         return exptime;
     }
 
-    public static void checkArguments(String[] args, String... specifier) {
+    public static int parseInt(byte[] bytes) {
+        return (int) parseLongNumber(bytes);
+    }
+
+    public static long parseLongNumber(byte[] bytes) {
+        long l = 0;
+        for (int i = bytes.length - 1; i >= 0; i--) {
+            final var b = bytes[i];
+            if (b < '0' || b > '9')
+                throw new NumberFormatException();
+            l = l * 10 + (b - '0');
+        }
+        return l;
+    }
+
+    public static int expirationTime(byte[] time) {
+        return Util.expirationTime(parseInt(time));
+    }
+
+    public static void checkArguments(List<byte[]> args, String... specifier) {
         if (!checkArguments(0, 0, args, specifier)) {
-            System.out.format("%s does not match %s\n",
-                    Arrays.toString(args), Arrays.toString(specifier));
+            System.out.format("%s does not match %s\n", args, Arrays.toString(specifier));
             throw new RuntimeException("Arguments unexpected");
         }
     }
 
-    public static boolean checkArgument(String arg, String exp) {
+    public static boolean checkArgument(byte[] arg, String exp) {
         if (exp.endsWith("*")) {
             exp = exp.substring(0, exp.length() - 1);
         }
@@ -198,11 +215,11 @@ public class Util {
 
         switch (exp) {
             case "K":
-                return arg.length() <= 250 && !arg.contains(" ");
+                return arg.length <= 250 && !contains(arg, (byte) 32);
             case "T": //TODO be more restrictive
             case "F": //TODO be more restrictive
             case "I":
-                return arg.matches("[0-9]+");
+                return isNumber(arg);
         }
 
         if (exp.toLowerCase().equals(exp)) {
@@ -212,11 +229,29 @@ public class Util {
         throw new RuntimeException("unknown expected argument " + exp);
     }
 
-    public static boolean checkArguments(int posA, int posS, String[] args, String[] expected) {
-        if (posA >= args.length) return true;
+    private static boolean contains(byte[] arg, byte s) {
+        for (byte b : arg) {
+            if (b == s) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNumber(byte[] arg) {
+        for (byte b : arg) {
+            if (!Character.isDigit(b)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static boolean checkArguments(int posA, int posS, List<byte[]> args, String[] expected) {
+        if (posA >= args.size()) return true;
         if (posS >= expected.length) return true;
 
-        var arg = args[posA];
+        var arg = args.get(posA);
         var exp = expected[posS];
 
         if (!checkArgument(arg, exp)) {
@@ -226,4 +261,12 @@ public class Util {
         if (!exp.endsWith("*")) posS += 1;
         return checkArguments(posA + 1, posS, args, expected);
     }
+
+
+    public static boolean equals(String value, byte[] bytes) {
+        var v = value.getBytes();
+        return Arrays.equals(v, bytes);
+    }
+
+
 }

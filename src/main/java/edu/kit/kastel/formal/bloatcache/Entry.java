@@ -21,7 +21,7 @@ public class Entry {
 
     int expirationDate;
 
-    Long cas;
+    long cas = 0;
 
     public Entry(String key, int flags, int exptime, byte[] data) {
         this(new Key(key), flags, exptime, data);
@@ -32,6 +32,15 @@ public class Entry {
         this.flags = flags;
         this.expirationDate = exptime;
         this.value = data;
+    }
+
+    public void update(byte[] data, Integer exptime, Integer flags) {
+        if (!Arrays.equals(data, value)) {
+            cas++;
+        }
+        value = data;
+        if (exptime != null) expirationDate = exptime;
+        if (flags != null) this.flags = flags;
     }
 
     public static class Key {
